@@ -51,10 +51,10 @@
 /* USER CODE BEGIN PV */
 DHT_t dht22;// dht22 struktura
 DHT_t dht11;// dht11 struktura
-bool dht22_ok = false;
-bool dht11_ok = false;
-bool dht11_initialized = false;
-bool dht22_initialized = false;
+bool dht22_ok = false;  // ar pavyko nuskaityt sensoriu
+bool dht11_ok = false;  // ar pavyko nuskaityt sensoriu
+bool dht11_initialized = false; // ar DHT11 filtras jau inicializuotas
+bool dht22_initialized = false; // ar DHT22 filtras jau inicializuotas
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,12 +66,15 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 uint8_t TxBuffer[20]; 
-uint8_t RxBuffer[20]; 
+uint8_t RxBuffer[20];
+// UART klaidos apdorojimo funkcija
 void HandleError() 
 { 
  uint32_t uart_err; 
  uart_err=HAL_UART_GetError(&huart2);  
 } 
+// Išorinio pertraukimo (EXTI) callback - iškvieciamas kai keiciasi GPIO busena
+// Naudojamas DHT jutikliu duomenu nuskaitymui per laikmacio pertraukimus
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     
@@ -118,17 +121,18 @@ int main(void)
   /* USER CODE BEGIN 2 */
   //HAL_TIM_Base_Start(&htim2);
 
-  
+  // OLED ekrano maitinimo reset seka
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
   HAL_Delay(100);
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
   HAL_Delay(100);
 
-
+  // Inicializuoja ir išvalo OLED ekrana
   ssd1306_Init();
   ssd1306_Fill(Black);
   ssd1306_UpdateScreen();
-
+  
+ // Inicializuoja DHT jutiklius 
   DHT_init(&dht22, DHT_Type_AM2301, &htim2, 72, GPIOB, GPIO_PIN_12);
   DHT_init(&dht11, DHT_Type_DHT11, &htim2, 72, GPIOB, GPIO_PIN_13);
 
@@ -138,26 +142,22 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   HAL_Delay(100);
 
-  uint32_t ticks = __HAL_TIM_GET_COUNTER(&htim2);
-  char buf[20];
-  sprintf(buf, "Ticks:%lu", ticks);
-  ssd1306_SetCursor(0, 0);
-  ssd1306_Fill(Black);
-  ssd1306_WriteString(buf, Font_7x10, White);
-  ssd1306_UpdateScreen();
 
 
+ //saugo paskutinio atnaujinimo laika (ms)
   uint32_t last_dht11 = 0;
   uint32_t last_dht22 = 0;
   uint32_t last_oled = 0;//laikmacio kintamieji
   uint32_t last_uart = 0;
   float t2 = 0, h2 = 0;
   float t1 = 0, h1 = 0;//sensoriu kintamieji
-
+// Neapdoroti jutikliu rodmenys
   float t2_f = 0, h2_f = 0;//filtro kintamieji
   float t1_f = 0, h1_f = 0;
+ // IIR (EMA) filtro išejimo kintamieji - filtruoti (vidurkinki) rodmenys
   float alpha_dht11 = 0.06f;
   float alpha_dht22 = 0.11f;
+  // Laukiama kol jutikliai stabilizuojasi po ijungimo
   HAL_Delay(3000);
   while (1)
   {
@@ -171,20 +171,19 @@ int main(void)
   {
       last_dht11 = now;
 
-      dht11_ok = DHT_readData(&dht11, &t1, &h1);
+      dht11_ok = DHT_readData(&dht11, &t1, &h1);// nuskaito dregme ir temperatura
       if(dht11_ok)
       {
-        //t1_f = t1_f + alpha_dht11 * (t1 - t1_f);
-        //h1_f = h1_f + alpha_dht11 * (h1 - h1_f);
+       
         if(!dht11_initialized)
         {
-           // t1_f = t1;
+           // Pirma karta - inicializuoja filtra tiesiogiai nuskaitytu dydžiu
             h1_f = h1;
             dht11_initialized = true;
         }
         else
         {
-           // t1_f = t1_f + alpha_dht11 * (t1 - t1_f);
+                   // IIR filtras
             h1_f = h1_f + alpha_dht11 * (h1 - h1_f);
         }
       
@@ -195,20 +194,19 @@ int main(void)
   {
      last_dht22 = now;
 
-     dht22_ok = DHT_readData(&dht22, &t2, &h2);
+     dht22_ok = DHT_readData(&dht22, &t2, &h2);// nuskaito dregme ir temperatura
      if(dht22_ok)
       {
-        //t2_f = t2_f + alpha_dht22 * (t2 - t2_f);
-        //h2_f = h2_f + alpha_dht22 * (h2 - h2_f);
+ 
         if(!dht22_initialized)
         {
-            //t2_f = t2;
+            // Pirma karta - inicializuoja filtra tiesiogiai nuskaitytu dydžiu
             h2_f = h2;
             dht22_initialized = true;
         }
         else
         {
-            //t2_f = t2_f + alpha_dht22 * (t2 - t2_f);
+            // IIR filtras
             h2_f = h2_f + alpha_dht22 * (h2 - h2_f);
         }
       }
@@ -217,22 +215,22 @@ int main(void)
   if(now - last_oled >= 10000)//oledas atnaujinamas kas 10s
   {
     last_oled = now;
-    ssd1306_Fill(Black);
+    ssd1306_Fill(Black);// išvalo ekrana
 
 
-    
+    // DHT22 dregmes rodymas 
     if(dht22_ok)
     {
         char tStr[32], hStr[32];
-        //int t2_whole = (int)t2_f;
-        //int t2_frac  = abs((int)(t2_f * 10) % 10);
+
         int h2_whole = (int)h2_f;
         int h2_frac  = abs((int)(h2_f * 10) % 10);
-        //sprintf(tStr, "T:%d.%d C", t2_whole, t2_frac);
+        
         sprintf(hStr, "H:%d.%d%%", h2_whole, h2_frac);
         ssd1306_SetCursor(0, 0);
-        //ssd1306_WriteString(tStr, Font_7x10, White);
+      
         ssd1306_SetCursor(0, 11);
+      // Jei dregme už 30-70% ribu - rodo ispejima
         if(h2_f < 30.0f || h2_f > 70.0f)
           ssd1306_WriteString("Uz 30_70 proc ribu", Font_7x10, White);
         else{
@@ -242,44 +240,45 @@ int main(void)
     }
     else
     {
+           // Jutiklio klaida
         ssd1306_SetCursor(0, 0);
         ssd1306_WriteString("Sensor Error", Font_11x18, White);
     }
 
-
+       // DHT11 dregmes rodymas 
     if(dht11_ok)
     {
-        char tStr[32], hStr[32];
-        //int t1_whole = (int)t1_f;
-        //int t1_frac  = abs((int)(t1_f * 10) % 10);
+        char  hStr[32];
+
         int h1_whole = (int)h1_f;
         int h1_frac  = abs((int)(h1_f * 10) % 10);
-        //sprintf(tStr, "T:%d.%d C", t1_whole, t1_frac);
         sprintf(hStr, "H:%d.%d%%", h1_whole, h1_frac);
-        ssd1306_SetCursor(0, 22);
-        //ssd1306_WriteString(tStr, Font_7x10, White);
         ssd1306_SetCursor(0, 33);
+         // Jei dregme už 30-70% ribu - rodo ispejima
         if(h1_f < 30.0f || h1_f > 70.0f)
         {
             ssd1306_WriteString("Uz 30_70 proc ribu", Font_7x10, White);
         }
         else
         {
+     
             ssd1306_WriteString(hStr, Font_7x10, White);
           
         }
     }
     else
     {
+         // Jutiklio klaida
         ssd1306_SetCursor(0, 22);
         ssd1306_WriteString("Sensor Error", Font_11x18, White);
     }
-    if(dht11_ok && dht22_ok){// skirtumas
+    if(dht11_ok && dht22_ok){ // Kanalu skirtumo skaiciavimas ir rodymas
+
     float h_diff = h1_f - h2_f;
     char hvidStr[32];
     int h_diff_whole = (int)h_diff;
     int h_diff_frac  = abs((int)(h_diff * 10) % 10);
-
+     //neigiamas skirtumas kai sveikoji dalis = 0
       if(h_diff < 0 && h_diff_whole == 0)
         sprintf(hvidStr, "Skirt:-%d.%d%%", h_diff_whole, h_diff_frac);
       else
@@ -296,12 +295,13 @@ int main(void)
     ssd1306_UpdateScreen();
 
   }
+   // UART duomenu siuntimas i kompiuteri kas 1s 
   if(now - last_uart >= 1000)
   {
     last_uart = now;
     char uartBuf[80];
     char h1_str[20], h2_str[20], diff_str[20];
-
+     // DHT11 duomenu formatavimas
     if(dht11_ok)
     {
     if(h1_f < 30.0f || h1_f > 70.0f)
@@ -317,7 +317,7 @@ int main(void)
     }
     else
         sprintf(h1_str, "ERROR");
-
+      // DHT22 duomenu formatavimas
     if(dht22_ok)
     {
         if(h2_f < 30.0f || h2_f > 70.0f)
@@ -333,12 +333,14 @@ int main(void)
     }
     else
         sprintf(h2_str, "ERROR");
-
+   
+      // Skirtumo tarp kanalu formatavimas
     if(dht11_ok && dht22_ok)
     {
         float diff = h1_f - h2_f;
         int diff_w = (int)diff;
         int diff_fr = abs((int)(diff * 10) % 10);
+         // Specialus atvejis: neigiamas skirtumas kai sveikoji dalis = 0
         if(diff < 0 && diff_w == 0)
             sprintf(diff_str, "-%d.%d%%", diff_w, diff_fr);
         else
@@ -346,7 +348,7 @@ int main(void)
     }
     else
         sprintf(diff_str, "ERROR");
-
+      // Suformuoja ir siuncia UART eilute i kompiuteri
     sprintf(uartBuf, "H1:%s H2:%s Skirt:%s\r\n", h1_str, h2_str, diff_str);
     HAL_UART_Transmit(&huart2, (uint8_t*)uartBuf, strlen(uartBuf), 100);
   }
